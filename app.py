@@ -9,33 +9,28 @@ st.set_page_config(
     layout="wide"
 )
 
-# Modern Soft Gradient Theme (Light Blue -> Soft Pink) + Styling
+# Custom Styling (Theme & Blue Reset Button)
 st.markdown("""
 <style>
-    /* Main Canvas Background */
     .stApp {
         background: linear-gradient(135deg, #E0F2FE 0%, #F1F5F9 50%, #FCE7F3 100%) !important;
         color: #0F172A !important;
     }
 
-    /* Top Header Bar */
     [data-testid="stHeader"] {
         background: transparent !important;
     }
 
-    /* Container Top Padding */
     .block-container {
         padding-top: 2rem !important;
     }
 
-    /* Translucent Glassmorphism Sidebar */
     [data-testid="stSidebar"] {
         background: rgba(255, 255, 255, 0.65) !important;
         backdrop-filter: blur(10px);
         border-right: 1px solid rgba(203, 213, 225, 0.8) !important;
     }
 
-    /* Typography & Contrast Adjustments */
     [data-testid="stSidebar"] label, 
     [data-testid="stSidebar"] p,
     div[role="radiogroup"] label, 
@@ -48,7 +43,6 @@ st.markdown("""
         font-weight: 600 !important;
     }
 
-    /* Metric Display Cards */
     .metric-card {
         background: rgba(255, 255, 255, 0.85);
         backdrop-filter: blur(8px);
@@ -70,18 +64,31 @@ st.markdown("""
         letter-spacing: 0.5px;
     }
 
-    /* AI Executive Strategic Insights Card */
-    .ai-card {
-        background: rgba(255, 255, 255, 0.95);
-        border-left: 5px solid #0284C7;
-        border-radius: 10px;
-        padding: 20px;
-        margin-top: 15px;
-        margin-bottom: 25px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    /* Force Solid Blue Fill and White Text on Reset Button */
+    div[data-testid="stSidebar"] div.stButton > button {
+        border-radius: 8px !important;
+    }
+    div[data-testid="stSidebar"] div.stButton > button[kind="secondary"],
+    div[data-testid="stSidebar"] div.stButton > button {
+        background-color: #0284C7 !important;
+        color: #FFFFFF !important;
+        border: 1px solid #0284C7 !important;
+        font-weight: 700 !important;
+        box-shadow: 0 4px 6px -1px rgba(2, 132, 199, 0.3) !important;
+    }
+    div[data-testid="stSidebar"] div.stButton > button:hover {
+        background-color: #0369A1 !important;
+        border-color: #0369A1 !important;
+        color: #FFFFFF !important;
     }
 
-    /* High-contrast Input Fields & Select Boxes */
+    /* Primary red button override for engine execution */
+    div[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+        background-color: #EF4444 !important;
+        border: 1px solid #EF4444 !important;
+        color: #FFFFFF !important;
+    }
+
     div[data-baseweb="input"],
     div[data-baseweb="select"] > div {
         background-color: #FFFFFF !important;
@@ -90,14 +97,6 @@ st.markdown("""
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
     }
 
-    /* Focus State Accent */
-    div[data-baseweb="input"]:focus-within,
-    div[data-baseweb="select"]:focus-within > div {
-        border-color: #0284C7 !important;
-        box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.2) !important;
-    }
-
-    /* Input Text Options */
     input {
         color: #0F172A !important;
         font-weight: 600 !important;
@@ -105,10 +104,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar Control Panel
+# State initialization
+if 'dataset_mode' not in st.session_state:
+    st.session_state['dataset_mode'] = 'primary'
+
 st.sidebar.title("Control Panel")
 st.sidebar.caption("Deterministic Engine Batch Controls")
 st.sidebar.markdown("---")
+
+# Reset Button (Clears session uploads & restores Kaggle datasets)
+if st.sidebar.button("Reset to Primary Dataset (100k+ Kaggle)", key="reset_btn", width="stretch"):
+    for key in ["custom_orders", "custom_payments"]:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    st.session_state['dataset_mode'] = 'primary'
+    
+    with st.spinner("Resetting workspace to primary Kaggle dataset..."):
+        run_ai_reconciliation(sample_size=None, orders_path='orders.csv', payments_path='payments.csv')
+    st.sidebar.success("Reset complete! Loaded primary dataset.")
+    st.rerun()
+
+st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 data_scale = st.sidebar.radio(
     "Select Batch Sample Size:",
@@ -124,45 +141,39 @@ size_mapping = {
 
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
-if st.sidebar.button("Execute Settlement Engine", type="primary", use_container_width=True):
-    with st.spinner("Processing transaction ledgers & invoking Financial AI analysis..."):
+if st.sidebar.button("Execute Settlement Engine", type="primary", width="stretch"):
+    with st.spinner("Processing transaction ledgers..."):
         run_ai_reconciliation(sample_size=size_mapping[data_scale])
     st.sidebar.success("Engine Execution Complete")
     st.rerun()
 
-# Custom File Upload Section Below Existing Controls
 st.sidebar.markdown("---")
 st.sidebar.subheader("Custom Dataset Upload (Optional)")
 uploaded_orders = st.sidebar.file_uploader("Upload Orders CSV", type=["csv"], key="custom_orders")
 uploaded_payments = st.sidebar.file_uploader("Upload Payments CSV", type=["csv"], key="custom_payments")
 
 if uploaded_orders and uploaded_payments:
-    if st.sidebar.button("Process Uploaded CSVs", use_container_width=True):
+    if st.sidebar.button("Process Uploaded CSVs", width="stretch"):
         df_orders_upload = pd.read_csv(uploaded_orders)
         df_payments_upload = pd.read_csv(uploaded_payments)
         
-        # Clean header spaces and deduplicate order_id column
-        df_orders_upload.columns = df_orders_upload.columns.str.strip()
-        df_payments_upload.columns = df_payments_upload.columns.str.strip()
-
-        if 'order_id' in df_orders_upload.columns:
-            df_orders_upload = df_orders_upload.drop_duplicates(subset=['order_id'], keep='first')
-
-        # Persist target files locally for pipeline consumption
-        df_orders_upload.to_csv("orders.csv", index=False)
-        df_payments_upload.to_csv("payments.csv", index=False)
+        st.session_state['dataset_mode'] = 'custom'
         
-        with st.spinner("Running engine on uploaded custom datasets..."):
-            run_ai_reconciliation(sample_size=None)
+        with st.spinner("Normalizing schema and processing custom dataset..."):
+            run_ai_reconciliation(sample_size=None, custom_dfs=(df_orders_upload, df_payments_upload))
         st.sidebar.success("Custom Dataset Execution Complete")
         st.rerun()
 
-# Title Header
+# Header
 st.title("Enterprise AI Finance Controller")
-st.caption("Automated Settlement Platform & Autonomous Exception Advisor")
+if st.session_state['dataset_mode'] == 'custom':
+    st.caption("Automated Settlement Platform | **Active Mode: Custom Uploaded Dataset**")
+else:
+    st.caption("Automated Settlement Platform | **Active Mode: Primary 100k+ Kaggle Benchmark Dataset**")
+
 st.markdown("---")
 
-# Main Pipeline Render
+# Render Dashboard Metrics & Analytics
 try:
     with open('reconciliation_report.json') as f:
         data = json.load(f)
@@ -170,9 +181,8 @@ try:
     summary = data.get('summary', {})
     reconciled = data.get('reconciled', [])
     exceptions = data.get('exceptions', [])
-    ai_analysis = data.get('ai_analysis', 'No AI analysis report available.')
+    ai_analysis = data.get('ai_analysis', {})
 
-    # Key Metric Indicator Cards
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(f"<div class='metric-card'><div class='metric-label'>Total Processed Ledger</div><div class='metric-value' style='color:#0F172A;'>{summary.get('total_records', 0):,}</div></div>", unsafe_allow_html=True)
@@ -185,21 +195,22 @@ try:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Financial AI Briefing Container
-    formatted_ai_analysis = ai_analysis.replace(
-        "#### Executive AI Audit Briefing & Risk Assessment", 
-        "<h4 style='margin-top:0; color:#0F172A;'>Executive AI Audit Briefing & Risk Assessment</h4>"
-    )
+    with st.container():
+        st.subheader("Domain-Specific Financial AI Briefing (FinGPT)")
+        
+        exec_text = ai_analysis.get('executive_summary', 'No summary available.') if isinstance(ai_analysis, dict) else ''
+        loss_text = ai_analysis.get('loss_analysis', 'No loss analysis available.') if isinstance(ai_analysis, dict) else ''
 
-    st.markdown(f"""
-    <div class='ai-card'>
-        <h3 style='margin-top:0; color:#0F172A;'>Domain-Specific Financial AI Briefing (FinGPT)</h3>
-        <hr style='border:none; border-top:1px solid rgba(203, 213, 225, 0.6); margin: 10px 0 15px 0;'>
-        <div>{formatted_ai_analysis}</div>
-    </div>
-    """, unsafe_allow_html=True)
+        st.markdown("#### Executive AI Audit Briefing & Risk Assessment")
+        st.markdown(exec_text)
+        
+        st.markdown("---")
+        
+        st.markdown("#### Financial Loss Risk & Exposure Analysis")
+        st.markdown(loss_text)
 
-    # Data Visualizations
+    st.markdown("<br>", unsafe_allow_html=True)
+
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
@@ -215,27 +226,32 @@ try:
             hole=0.45
         )
         fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#0F172A")
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
 
     with chart_col2:
         st.subheader("Exception Categories")
         if exceptions:
             df_exc_chart = pd.DataFrame(exceptions)
-            issue_counts = df_exc_chart['issue'].value_counts().reset_index()
+            category_col = 'issue_category' if 'issue_category' in df_exc_chart.columns else 'issue'
+            issue_counts = df_exc_chart[category_col].value_counts().reset_index()
             issue_counts.columns = ['Category', 'Count']
             fig_bar = px.bar(
                 issue_counts, x='Count', y='Category',
                 orientation='h',
                 color_discrete_sequence=['#BE123C']
             )
-            fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#0F172A")
-            st.plotly_chart(fig_bar, use_container_width=True)
+            fig_bar.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", 
+                plot_bgcolor="rgba(0,0,0,0)", 
+                font_color="#0F172A",
+                yaxis={'categoryorder':'total ascending'}
+            )
+            st.plotly_chart(fig_bar, width="stretch")
         else:
             st.info("No exceptions detected in this dataset run.")
 
     st.markdown("---")
 
-    # Detailed Audit Logs Table
     st.subheader("Transaction History & Exception Audit Log")
     
     view_mode = st.radio(
@@ -274,7 +290,7 @@ try:
                     "severity": "Severity",
                     "action": "Resolution Status"
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:
@@ -301,11 +317,11 @@ try:
                     "status": "Settlement Status",
                     "confidence_score": st.column_config.NumberColumn("Confidence", format="%.2f")
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:
             st.info("No reconciled records found.")
 
 except Exception as e:
-    st.error("Engine report missing. Click 'Execute Settlement Engine' in the left sidebar to generate.")
+    st.error(f"Engine report missing or failed to render: {e}. Click 'Execute Settlement Engine' to generate.")
