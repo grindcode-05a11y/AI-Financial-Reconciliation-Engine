@@ -139,8 +139,13 @@ if uploaded_orders and uploaded_payments:
     if st.sidebar.button("Process Uploaded CSVs", use_container_width=True):
         df_orders_upload = pd.read_csv(uploaded_orders)
         df_payments_upload = pd.read_csv(uploaded_payments)
+        
+        # Save uploaded data to disk so reconcile.py picks it up seamlessly
+        df_orders_upload.to_csv("orders.csv", index=False)
+        df_payments_upload.to_csv("payments.csv", index=False)
+        
         with st.spinner("Running engine on uploaded custom datasets..."):
-            run_ai_reconciliation(orders_df=df_orders_upload, payments_df=df_payments_upload)
+            run_ai_reconciliation(sample_size=None)
         st.sidebar.success("Custom Dataset Execution Complete")
 
 # Title Header
