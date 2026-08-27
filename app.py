@@ -129,6 +129,20 @@ if st.sidebar.button("Execute Settlement Engine", type="primary", use_container_
         run_ai_reconciliation(sample_size=size_mapping[data_scale])
     st.sidebar.success("Engine Execution Complete")
 
+# Custom File Upload Section Below Existing Controls
+st.sidebar.markdown("---")
+st.sidebar.subheader("Custom Dataset Upload (Optional)")
+uploaded_orders = st.sidebar.file_uploader("Upload Orders CSV", type=["csv"], key="custom_orders")
+uploaded_payments = st.sidebar.file_uploader("Upload Payments CSV", type=["csv"], key="custom_payments")
+
+if uploaded_orders and uploaded_payments:
+    if st.sidebar.button("Process Uploaded CSVs", use_container_width=True):
+        df_orders_upload = pd.read_csv(uploaded_orders)
+        df_payments_upload = pd.read_csv(uploaded_payments)
+        with st.spinner("Running engine on uploaded custom datasets..."):
+            run_ai_reconciliation(orders_df=df_orders_upload, payments_df=df_payments_upload)
+        st.sidebar.success("Custom Dataset Execution Complete")
+
 # Title Header
 st.title("Enterprise AI Finance Controller")
 st.caption("Automated Settlement Platform & Autonomous Exception Advisor")
@@ -157,7 +171,7 @@ try:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Financial AI Briefing Container (Single-block render ensures text stays inside the card)
+    # Financial AI Briefing Container
     formatted_ai_analysis = ai_analysis.replace(
         "#### Executive AI Audit Briefing & Risk Assessment", 
         "<h4 style='margin-top:0; color:#0F172A;'>Executive AI Audit Briefing & Risk Assessment</h4>"
