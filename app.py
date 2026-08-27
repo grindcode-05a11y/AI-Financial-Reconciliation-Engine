@@ -128,6 +128,7 @@ if st.sidebar.button("Execute Settlement Engine", type="primary", use_container_
     with st.spinner("Processing transaction ledgers & invoking Financial AI analysis..."):
         run_ai_reconciliation(sample_size=size_mapping[data_scale])
     st.sidebar.success("Engine Execution Complete")
+    st.rerun()
 
 # Custom File Upload Section Below Existing Controls
 st.sidebar.markdown("---")
@@ -140,13 +141,21 @@ if uploaded_orders and uploaded_payments:
         df_orders_upload = pd.read_csv(uploaded_orders)
         df_payments_upload = pd.read_csv(uploaded_payments)
         
-        # Save uploaded data to disk so reconcile.py picks it up seamlessly
+        # Clean header spaces and deduplicate order_id column
+        df_orders_upload.columns = df_orders_upload.columns.str.strip()
+        df_payments_upload.columns = df_payments_upload.columns.str.strip()
+
+        if 'order_id' in df_orders_upload.columns:
+            df_orders_upload = df_orders_upload.drop_duplicates(subset=['order_id'], keep='first')
+
+        # Persist target files locally for pipeline consumption
         df_orders_upload.to_csv("orders.csv", index=False)
         df_payments_upload.to_csv("payments.csv", index=False)
         
         with st.spinner("Running engine on uploaded custom datasets..."):
             run_ai_reconciliation(sample_size=None)
         st.sidebar.success("Custom Dataset Execution Complete")
+        st.rerun()
 
 # Title Header
 st.title("Enterprise AI Finance Controller")
@@ -184,7 +193,7 @@ try:
 
     st.markdown(f"""
     <div class='ai-card'>
-        <h3 style='margin-top:0; color:#0F172A;'>Domain-Specific Financial AI Briefing</h3>
+        <h3 style='margin-top:0; color:#0F172A;'>Domain-Specific Financial AI Briefing (FinGPT)</h3>
         <hr style='border:none; border-top:1px solid rgba(203, 213, 225, 0.6); margin: 10px 0 15px 0;'>
         <div>{formatted_ai_analysis}</div>
     </div>

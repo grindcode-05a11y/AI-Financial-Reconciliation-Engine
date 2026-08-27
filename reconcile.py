@@ -11,17 +11,16 @@ HF_API_URL = "https://api-inference.huggingface.co/models/FinGPT/fingpt-forecast
 
 def analyze_financial_exceptions_with_fin_ai(summary_metrics, exception_list):
     """
-    Sends aggregated metrics and sample exception logs to a specialized financial AI.
-    Falls back to a local structured audit report if the API is offline or returns an error.
+    Sends aggregated metrics and exception logs to FinGPT to dynamically generate 
+    both the audit briefing and targeted strategic mitigations.
     """
-    # Safely retrieve from Streamlit secrets, environment variables, or empty string CLI fallback
     HF_API_KEY = ""
     try:
         HF_API_KEY = st.secrets.get("HF_API_KEY", "")
     except Exception:
         HF_API_KEY = os.getenv("HF_API_KEY", "")
 
-    # Fallback generator for offline/unreachable API states or local runs
+    # Dynamic fallback: Aggregates real data metrics instead of hardcoded strings
     def build_local_fallback():
         if not exception_list:
             return "#### Executive AI Audit Briefing & Risk Assessment\n\n* **System Status:** Optimal. Zero operational risks or settlement mismatches detected in this ledger batch."
@@ -31,6 +30,22 @@ def analyze_financial_exceptions_with_fin_ai(summary_metrics, exception_list):
         high_sev_count = len(df_exc[df_exc['severity'] == 'High']) if 'severity' in df_exc.columns else 0
         total_stuck = df_exc['paid_amount'].sum() if 'paid_amount' in df_exc.columns else 0.0
 
+        # Build dynamic recommendations based on detected exception categories
+        dynamic_recommendations = []
+        issues_text = " ".join(df_exc['issue'].tolist())
+
+        if "Missing Order" in issues_text:
+            dynamic_recommendations.append("1. **Order Sync Pipeline Audit:** Re-index asynchronous webhooks between merchant database and checkout gateway to resolve missing ledger references.")
+        if "Gateway Status" in issues_text:
+            dynamic_recommendations.append(f"{len(dynamic_recommendations) + 1}. **Automated Polling Protocol:** Implement a 3-way retry mechanism for payment statuses flagged under `{top_issue}`.")
+        if "Amount Discrepancy" in issues_text:
+            dynamic_recommendations.append(f"{len(dynamic_recommendations) + 1}. **Fee Structure Reconciliation:** Recalibrate dynamic gateway processing fees against raw transaction amounts to eliminate minor rounding variances.")
+
+        if not dynamic_recommendations:
+            dynamic_recommendations.append("1. **Treasury Escalation:** Initiate manual review for high-value unclassified ledger mismatches.")
+
+        rec_str = "\n".join(dynamic_recommendations)
+
         return f"""#### Executive AI Audit Briefing & Risk Assessment
 
 * **Primary Bottleneck Identified:** `{top_issue}` accounts for the primary share of settlement failures.
@@ -39,43 +54,47 @@ def analyze_financial_exceptions_with_fin_ai(summary_metrics, exception_list):
 
 ---
 
-**Strategic Mitigation Recommendations:**
-1. **Gateway API Retry Protocol:** Implement 3-way asynchronous polling for gateway timeouts (`Gateway Status Issue`).
-2. **Fee Variance Thresholds:** Audit payment processor settlement fee structures against internal merchant ledger settings.
-3. **Escalation Path:** Trigger automated webhooks to the Risk Operations team for high-value transactions exceeding ₹10,000 stuck in review."""
+**Strategic Mitigation Recommendations (Generated from Data):**
+{rec_str}"""
 
     if not HF_API_KEY or HF_API_KEY == "hf_your_actual_api_key_here":
         return build_local_fallback()
 
     headers = {"Authorization": f"Bearer {HF_API_KEY}"}
     
-    prompt = f"""[TASK: FINANCIAL AUDIT & RISK ANALYSIS]
-Analyze the following settlement engine execution logs:
-- Total Processed Ledger: {summary_metrics.get('total_records')}
-- Match Rate: {summary_metrics.get('match_rate_pct')}%
-- Exception Count: {summary_metrics.get('exception_count')}
+    # Explicit prompt instructing FinGPT to generate dynamic strategic mitigations
+    prompt = f"""[TASK: FINANCIAL AUDIT & DYNAMIC STRATEGIC MITIGATION]
+You are an expert AI Financial Controller. Analyze these settlement logs:
+- Total Ledger Records: {summary_metrics.get('total_records')}
+- Verified Match Rate: {summary_metrics.get('match_rate_pct')}%
+- Total Exceptions: {summary_metrics.get('exception_count')}
 
-Sample Flagged Exception Records:
+Sample Exception Log:
 {json.dumps(exception_list[:5], indent=2)}
 
-Provide an executive mitigation strategy focusing on:
-1. Operational Gateway Risk
-2. Estimated Revenue at Risk
-3. Actionable Mitigation Steps for Treasury & Accounting"""
+Generate a response with two distinct sections:
+1. Executive AI Audit Briefing & Risk Assessment (summarizing top issue, revenue at risk, and critical vulnerabilities).
+2. Strategic Mitigation Recommendations (provide 3 customized, dynamic action steps specifically tailored to solve the exact exceptions listed above for Treasury and Engineering)."""
 
     payload = {
         "inputs": prompt,
-        "parameters": {"max_new_tokens": 400, "temperature": 0.2}
+        "parameters": {
+            "max_new_tokens": 512,
+            "temperature": 0.3,
+            "return_full_text": False
+        }
     }
 
     try:
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=10)
+        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=12)
         result = response.json()
         
         if isinstance(result, list) and len(result) > 0:
-            return result[0].get('generated_text', build_local_fallback())
+            generated_text = result[0].get('generated_text', '')
+            return generated_text.strip() if generated_text.strip() else build_local_fallback()
         elif isinstance(result, dict) and 'generated_text' in result:
-            return result.get('generated_text')
+            generated_text = result.get('generated_text', '')
+            return generated_text.strip() if generated_text.strip() else build_local_fallback()
         else:
             return build_local_fallback()
             
@@ -87,6 +106,10 @@ def run_ai_reconciliation(sample_size=None):
     payments_df = pd.read_csv('payments.csv')
     orders_df = pd.read_csv('orders.csv')
 
+    # Clean header whitespace
+    payments_df.columns = payments_df.columns.str.strip()
+    orders_df.columns = orders_df.columns.str.strip()
+
     if sample_size and sample_size < len(payments_df):
         payments_batch = payments_df.head(sample_size).copy()
     else:
@@ -95,7 +118,9 @@ def run_ai_reconciliation(sample_size=None):
     reconciled_list = []
     exception_list = []
 
-    orders_indexed = orders_df.set_index('order_id').to_dict('index')
+    # Safe deduplication of orders to prevent Pandas to_dict('index') ValueError
+    orders_deduped = orders_df.drop_duplicates(subset=['order_id'], keep='first')
+    orders_indexed = orders_deduped.set_index('order_id').to_dict('index')
 
     for idx, pay_row in payments_batch.iterrows():
         p_id = str(pay_row.get('payment_id', f"PAY_{idx}"))
