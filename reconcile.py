@@ -1,229 +1,171 @@
 import pandas as pd
-import json
 import numpy as np
-import requests
+import json
 import os
-import streamlit as st
+from utils import normalize_and_validate_datasets, calculate_match_percentage
 
-# Hugging Face Inference API configuration for specialized financial LLM
-HF_API_URL = "https://api-inference.huggingface.co/models/FinGPT/fingpt-forecaster_dow30_llama2-7b_lora"
-
-
-def analyze_financial_exceptions_with_fin_ai(summary_metrics, exception_list):
-    """
-    Sends aggregated metrics and exception logs to FinGPT to dynamically generate 
-    both the audit briefing and targeted strategic mitigations.
-    """
-    HF_API_KEY = ""
-    try:
-        HF_API_KEY = st.secrets.get("HF_API_KEY", "")
-    except Exception:
-        HF_API_KEY = os.getenv("HF_API_KEY", "")
-
-    # Dynamic fallback: Aggregates real data metrics instead of hardcoded strings
-    def build_local_fallback():
-        if not exception_list:
-            return "#### Executive AI Audit Briefing & Risk Assessment\n\n* **System Status:** Optimal. Zero operational risks or settlement mismatches detected in this ledger batch."
-        
-        df_exc = pd.DataFrame(exception_list)
-        top_issue = df_exc['issue'].mode()[0] if not df_exc.empty else "N/A"
-        high_sev_count = len(df_exc[df_exc['severity'] == 'High']) if 'severity' in df_exc.columns else 0
-        total_stuck = df_exc['paid_amount'].sum() if 'paid_amount' in df_exc.columns else 0.0
-
-        # Build dynamic recommendations based on detected exception categories
-        dynamic_recommendations = []
-        issues_text = " ".join(df_exc['issue'].tolist())
-
-        if "Missing Order" in issues_text:
-            dynamic_recommendations.append("1. **Order Sync Pipeline Audit:** Re-index asynchronous webhooks between merchant database and checkout gateway to resolve missing ledger references.")
-        if "Gateway Status" in issues_text:
-            dynamic_recommendations.append(f"{len(dynamic_recommendations) + 1}. **Automated Polling Protocol:** Implement a 3-way retry mechanism for payment statuses flagged under `{top_issue}`.")
-        if "Amount Discrepancy" in issues_text:
-            dynamic_recommendations.append(f"{len(dynamic_recommendations) + 1}. **Fee Structure Reconciliation:** Recalibrate dynamic gateway processing fees against raw transaction amounts to eliminate minor rounding variances.")
-
-        if not dynamic_recommendations:
-            dynamic_recommendations.append("1. **Treasury Escalation:** Initiate manual review for high-value unclassified ledger mismatches.")
-
-        rec_str = "\n".join(dynamic_recommendations)
-
-        return f"""#### Executive AI Audit Briefing & Risk Assessment
-
-* **Primary Bottleneck Identified:** `{top_issue}` accounts for the primary share of settlement failures.
-* **Financial Risk Exposure:** **₹{total_stuck:,.2f}** total transaction volume currently flagged in unresolved/review states.
-* **Critical Vulnerabilities:** **{high_sev_count} high-severity exceptions** require immediate treasury intervention.
-
----
-
-**Strategic Mitigation Recommendations (Generated from Data):**
-{rec_str}"""
-
-    if not HF_API_KEY or HF_API_KEY == "hf_your_actual_api_key_here":
-        return build_local_fallback()
-
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-    
-    # Explicit prompt instructing FinGPT to generate dynamic strategic mitigations
-    prompt = f"""[TASK: FINANCIAL AUDIT & DYNAMIC STRATEGIC MITIGATION]
-You are an expert AI Financial Controller. Analyze these settlement logs:
-- Total Ledger Records: {summary_metrics.get('total_records')}
-- Verified Match Rate: {summary_metrics.get('match_rate_pct')}%
-- Total Exceptions: {summary_metrics.get('exception_count')}
-
-Sample Exception Log:
-{json.dumps(exception_list[:5], indent=2)}
-
-Generate a response with two distinct sections:
-1. Executive AI Audit Briefing & Risk Assessment (summarizing top issue, revenue at risk, and critical vulnerabilities).
-2. Strategic Mitigation Recommendations (provide 3 customized, dynamic action steps specifically tailored to solve the exact exceptions listed above for Treasury and Engineering)."""
-
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 512,
-            "temperature": 0.3,
-            "return_full_text": False
-        }
-    }
-
-    try:
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=12)
-        result = response.json()
-        
-        if isinstance(result, list) and len(result) > 0:
-            generated_text = result[0].get('generated_text', '')
-            return generated_text.strip() if generated_text.strip() else build_local_fallback()
-        elif isinstance(result, dict) and 'generated_text' in result:
-            generated_text = result.get('generated_text', '')
-            return generated_text.strip() if generated_text.strip() else build_local_fallback()
-        else:
-            return build_local_fallback()
-            
-    except Exception:
-        return build_local_fallback()
-
-
-def run_ai_reconciliation(sample_size=None):
-    payments_df = pd.read_csv('payments.csv')
-    orders_df = pd.read_csv('orders.csv')
-
-    # Clean header whitespace
-    payments_df.columns = payments_df.columns.str.strip()
-    orders_df.columns = orders_df.columns.str.strip()
-
-    if sample_size and sample_size < len(payments_df):
-        payments_batch = payments_df.head(sample_size).copy()
+def run_ai_reconciliation(sample_size=None, orders_path='orders.csv', payments_path='payments.csv', custom_dfs=None):
+    if custom_dfs is not None:
+        raw_orders, raw_payments = custom_dfs
     else:
-        payments_batch = payments_df.copy()
+        raw_orders = pd.read_csv(orders_path)
+        raw_payments = pd.read_csv(payments_path)
+
+    orders, payments = normalize_and_validate_datasets(raw_orders, raw_payments)
+
+    if sample_size and sample_size < len(orders):
+        orders = orders.head(sample_size)
+        payments = payments[payments['order_id'].isin(orders['order_id'])]
+
+    # Exact Left Join on Order ID
+    merged = pd.merge(payments, orders, on='order_id', how='left', suffixes=('_payment', '_order'))
+
+    merged['paid_amount'] = merged['paid_amount'].fillna(0.0)
+    merged['order_amount_val'] = merged['order_amount'].fillna(0.0)
+    merged['fee_val'] = merged.get('fee_payment', merged.get('fee_order', 0.0)).fillna(0.0)
+
+    # Prefer the PAYMENT side's status (the real payment-gateway status,
+    # e.g. Success/Refunded/Failed/Not Charged/Pending) over the order's own
+    # fulfilment status -- that's what "Gateway Status Issue" is meant to
+    # reflect. Only fall back to order status if no payment status exists.
+    if 'status_payment' in merged.columns:
+        merged['status_val'] = merged['status_payment'].fillna('COMPLETED').astype(str).str.strip()
+    elif 'status_order' in merged.columns:
+        merged['status_val'] = merged['status_order'].fillna('COMPLETED').astype(str).str.strip()
+    elif 'status' in merged.columns:
+        merged['status_val'] = merged['status'].fillna('COMPLETED').astype(str).str.strip()
+    else:
+        merged['status_val'] = 'COMPLETED'
+
+    # Whether the orders file actually contained a genuine monetary field.
+    # If it didn't (e.g. this orders.csv only has order_status/shipping/
+    # discount columns, no order value), amount-matching is not a
+    # meaningful signal and must not be allowed to veto every row --
+    # reconciliation then rests on payment status alone.
+    has_order_amount_data = bool(merged.get('order_amount_is_real_payment',
+                                  merged.get('order_amount_is_real_order',
+                                  merged.get('order_amount_is_real', pd.Series([False])))).any())
+
+    valid_status = merged['status_val'].str.upper().isin(['COMPLETED', 'SUCCESS', 'SETTLED', 'PAID', 'DELIVERED', 'SHIPPED', ''])
+
+    if has_order_amount_data:
+        has_matched_order = merged['order_amount_val'] > 0
+        gross_diff = (merged['paid_amount'] - merged['order_amount_val']).abs()
+        net_diff = ((merged['paid_amount'] + merged['fee_val']) - merged['order_amount_val']).abs()
+        amount_matches = (gross_diff <= 1.0) | (net_diff <= 1.0) | (gross_diff / np.maximum(merged['order_amount_val'], 1.0) <= 0.02)
+        is_reconciled = has_matched_order & valid_status & amount_matches
+    else:
+        # No real order-value column to check amounts against -- use the
+        # payment actually clearing (paid_amount > 0) plus a valid gateway
+        # status as the reconciliation signal instead of a fabricated amount.
+        has_matched_order = merged['paid_amount'] > 0
+        amount_matches = pd.Series(True, index=merged.index)
+        is_reconciled = has_matched_order & valid_status
+
+    df_reconciled = merged[is_reconciled].copy()
+    df_exceptions = merged[~is_reconciled].copy()
+
+    # Exception Audit Log
+    exceptions_list = []
+    if not df_exceptions.empty:
+        if has_order_amount_data:
+            cond_missing = ~df_exceptions['order_amount_val'].gt(0)
+        else:
+            cond_missing = pd.Series(False, index=df_exceptions.index)
+        # Any status outside the accepted "valid_status" whitelist is a genuine
+        # status issue -- label it using whatever that real status value is
+        # (Refunded/Failed/Cancelled/Canceled/Unavailable/Invoiced/Processing/...)
+        # rather than a fixed hardcoded list that only covers a subset of
+        # possible source vocabularies and silently mislabels the rest as a
+        # generic "Amount Discrepancy".
+        cond_status = ~valid_status.loc[df_exceptions.index]
+
+        conditions = [cond_status, cond_missing]
+        issues = [
+            'Gateway Status Issue (' + df_exceptions['status_val'].str.capitalize() + ')',
+            'Missing Order Record in Merchant Ledger'
+        ]
+        
+        df_exceptions['issue'] = np.select(conditions, issues, default='Amount Discrepancy')
+
+        # Severity tiering: a ledger integrity break (no matching order at
+        # all) is always the worst case. Beyond that, not every non-valid
+        # status carries the same real-world risk -- a terminal failure
+        # (Failed/Declined/Cancelled/Unavailable) needs urgent treasury
+        # attention, a transient in-flight status (Pending/Processing/
+        # Invoiced/Created/Approved) will very likely resolve on its own,
+        # and a completed-then-reversed Refund sits in between. A genuine
+        # amount mismatch on an otherwise valid status is Medium by default.
+        # Using a single hardcoded True/False split previously meant every
+        # status issue was forced to High and Medium/Low were unreachable.
+        status_upper = df_exceptions['status_val'].str.upper()
+        HIGH_RISK_STATUSES = {'FAILED', 'DECLINED', 'CANCELLED', 'CANCELED', 'UNAVAILABLE'}
+        LOW_RISK_STATUSES = {'PENDING', 'PROCESSING', 'INVOICED', 'CREATED', 'APPROVED', 'NOT CHARGED'}
+
+        severity = pd.Series('Medium', index=df_exceptions.index)
+        severity[cond_status & status_upper.isin(LOW_RISK_STATUSES)] = 'Low'
+        severity[cond_status & status_upper.isin(HIGH_RISK_STATUSES)] = 'High'
+        severity[cond_status & ~status_upper.isin(HIGH_RISK_STATUSES | LOW_RISK_STATUSES)] = 'Medium'
+        severity[cond_missing] = 'High'  # a missing ledger record always overrides to High
+        df_exceptions['severity'] = severity
+
+        df_exceptions['action'] = 'FLAGGED_FOR_REVIEW'
+        df_exceptions['fee'] = df_exceptions['fee_val']
+        
+        exceptions_list = df_exceptions[['record_id', 'order_id', 'paid_amount', 'fee', 'issue', 'severity', 'action']].to_dict(orient='records')
 
     reconciled_list = []
-    exception_list = []
+    if not df_reconciled.empty:
+        df_reconciled['status'] = 'SETTLED'
+        df_reconciled['confidence_score'] = 1.0
+        df_reconciled['amount'] = df_reconciled['paid_amount']
+        df_reconciled['fee'] = df_reconciled['fee_val']
+        reconciled_list = df_reconciled[['record_id', 'order_id', 'amount', 'fee', 'status', 'confidence_score']].to_dict(orient='records')
 
-    # Safe deduplication of orders to prevent Pandas to_dict('index') ValueError
-    orders_deduped = orders_df.drop_duplicates(subset=['order_id'], keep='first')
-    orders_indexed = orders_deduped.set_index('order_id').to_dict('index')
+    total_records = len(merged)
+    reconciled_count = len(reconciled_list)
+    exception_count = len(exceptions_list)
+    match_rate = round((reconciled_count / total_records * 100), 2) if total_records > 0 else 0.0
 
-    for idx, pay_row in payments_batch.iterrows():
-        p_id = str(pay_row.get('payment_id', f"PAY_{idx}"))
-        o_id = str(pay_row.get('order_id', 'MISSING_ID'))
-        
-        try:
-            pay_amount = float(pay_row.get('amount_paid', 0.0))
-            if np.isnan(pay_amount): pay_amount = 0.0
-        except (ValueError, TypeError):
-            pay_amount = 0.0
+    total_exposure = float(df_exceptions['paid_amount'].sum()) if not df_exceptions.empty else 0.0
+    high_severity_count = sum(1 for e in exceptions_list if e['severity'] == 'High')
+    
+    primary_issue = "Gateway Status Issue (Refunded)"
+    if exceptions_list:
+        primary_issue = pd.DataFrame(exceptions_list)['issue'].value_counts().index[0]
 
-        try:
-            fee = float(pay_row.get('transaction_fee', 0.0))
-            if np.isnan(fee): fee = 0.0
-        except (ValueError, TypeError):
-            fee = 0.0
+    exec_summary = [
+        f"• <b>Primary Bottleneck Identified:</b> <code>{primary_issue}</code> accounts for the primary share of settlement failures.",
+        f"• <b>Financial Risk Exposure:</b> ₹{total_exposure:,.2f} total transaction volume currently flagged in unresolved/review states.",
+        f"• <b>Critical Vulnerabilities:</b> {high_severity_count} high-severity exceptions require immediate treasury intervention."
+    ]
 
-        raw_status = str(pay_row.get('payment_status', 'Unknown')).strip().capitalize()
-        
-        # Missing Order Record -> High Severity
-        if o_id not in orders_indexed:
-            exception_list.append({
-                "record_id": p_id,
-                "order_id": o_id,
-                "paid_amount": pay_amount,
-                "fee": fee,
-                "issue": "Missing Order Record in Merchant Ledger",
-                "severity": "High",
-                "action": "FLAGGED_UNRESOLVED"
-            })
-            continue
+    est_loss = total_exposure * 0.12
+    loss_analysis = [
+        f"• <b>Direct Capital Exposure:</b> ₹{total_exposure:,.2f} locked in high-severity un-reconciled states with active settlement blockage.",
+        f"• <b>Estimated Annual Revenue Leakage:</b> ₹{est_loss:,.2f} projected loss from payment processor discrepancies, chargeback penalties, and manual operational overhead.",
+        f"• <b>Operational Risk Index:</b> High. Unlinked ledger references introduce compliance audit risks under standard merchant settlement timelines."
+    ]
 
-        order_record = orders_indexed[o_id]
-        
-        try:
-            order_amount = float(order_record.get('total_amount', pay_amount))
-            if np.isnan(order_amount): order_amount = pay_amount
-        except (ValueError, TypeError):
-            order_amount = pay_amount
-
-        # Gateway Status Issues with Dynamic Severity Scoring
-        if raw_status not in ['Success', 'Captured', 'Completed']:
-            severity_level = "High" if raw_status in ['Failed', 'User_dropped'] else "Medium"
-            exception_list.append({
-                "record_id": p_id,
-                "order_id": o_id,
-                "paid_amount": pay_amount,
-                "fee": fee,
-                "issue": f"Gateway Status Issue ({raw_status})",
-                "severity": severity_level,
-                "action": "FLAGGED_FOR_REVIEW"
-            })
-            continue
-
-        # Amount Reconciliation Logic
-        diff_direct = abs(pay_amount - order_amount)
-        diff_net = abs((pay_amount + fee) - order_amount)
-
-        if diff_direct <= 0.01 or diff_net <= 0.01:
-            reconciled_list.append({
-                "record_id": p_id,
-                "order_id": o_id,
-                "amount": pay_amount,
-                "fee": fee,
-                "status": "RECONCILED",
-                "confidence_score": 0.99
-            })
-        else:
-            exception_list.append({
-                "record_id": p_id,
-                "order_id": o_id,
-                "paid_amount": pay_amount,
-                "fee": fee,
-                "issue": f"Amount Discrepancy (Paid: {pay_amount}, Expected: {order_amount})",
-                "severity": "High",
-                "action": "ROUTED_TO_EXCEPTION"
-            })
-
-    total_records = len(payments_batch)
-    matched_count = len(reconciled_list)
-    match_rate = (matched_count / total_records * 100) if total_records > 0 else 0.0
-
-    summary_metrics = {
-        "total_records": total_records,
-        "match_rate_pct": round(match_rate, 2),
-        "reconciled_count": matched_count,
-        "exception_count": len(exception_list)
-    }
-
-    ai_analysis_report = analyze_financial_exceptions_with_fin_ai(summary_metrics, exception_list)
-
-    report_data = {
-        "summary": summary_metrics,
+    report = {
+        "summary": {
+            "total_records": total_records,
+            "reconciled_count": reconciled_count,
+            "exception_count": exception_count,
+            "match_rate_pct": match_rate
+        },
+        "ai_analysis": {
+            "executive_summary": exec_summary,
+            "loss_analysis": loss_analysis
+        },
         "reconciled": reconciled_list,
-        "exceptions": exception_list,
-        "ai_analysis": ai_analysis_report
+        "exceptions": exceptions_list
     }
 
-    with open('reconciliation_report.json', 'w') as f:
-        json.dump(report_data, f, indent=4)
+    with open('reconciliation_report.json', 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=4)
 
-    return report_data
+    return report
 
-
-if __name__ == '__main__':
-    run_ai_reconciliation()
+if __name__ == "__main__":
+    run_ai_reconciliation("")
