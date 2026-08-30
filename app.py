@@ -218,7 +218,9 @@ try:
                 'fee': 'Fee',
                 'issue': 'Audit Exception Reason',
                 'severity': 'Severity',
-                'action': 'Resolution Status'
+                'action': 'Resolution Status',
+                'ai_risk_score': 'AI Risk Score',
+                'agent_reasoning': 'AI Agent Reasoning'
             }
             df_display = df_table.rename(columns=col_rename)
             if 'Amount Paid' in df_display.columns:
@@ -232,7 +234,8 @@ try:
                 'amount': 'Amount Paid',
                 'fee': 'Fee',
                 'status': 'Resolution Status',
-                'confidence_score': 'Confidence Score'
+                'confidence_score': 'Confidence Score',
+                'ai_risk_score': 'AI Risk Score'
             }
             df_display = df_table.rename(columns=col_rename)
             if 'Amount Paid' in df_display.columns:

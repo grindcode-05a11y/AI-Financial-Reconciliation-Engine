@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import json
 import os
+from sklearn.ensemble import IsolationForest
 from utils import normalize_and_validate_datasets, calculate_match_percentage
 
 def run_ai_reconciliation(sample_size=None, orders_path='orders.csv', payments_path='payments.csv', custom_dfs=None):
@@ -65,6 +66,33 @@ def run_ai_reconciliation(sample_size=None, orders_path='orders.csv', payments_p
     df_reconciled = merged[is_reconciled].copy()
     df_exceptions = merged[~is_reconciled].copy()
 
+    # --- Secondary AI signal: unsupervised anomaly scoring ---
+    # The deterministic rules above are what actually decide reconciled vs.
+    # exception -- that stays fully rule-based and auditable, which is what
+    # a fintech settlement context actually requires (no black-box decision
+    # over real money movement). On top of that, an unsupervised anomaly
+    # detector (IsolationForest) adds a secondary, ML-derived risk score
+    # per transaction, surfacing statistical outliers that a fixed
+    # tolerance threshold might not catch. This runs entirely in-process on
+    # numbers already computed above -- no external call, no transaction
+    # data leaves the environment.
+    feature_cols = pd.DataFrame({
+        'paid_amount': merged['paid_amount'],
+        'order_amount_val': merged['order_amount_val'],
+        'fee_val': merged['fee_val'],
+        'abs_diff': (merged['paid_amount'] - merged['order_amount_val']).abs()
+    })
+    iso_forest = IsolationForest(n_estimators=100, contamination='auto', random_state=42)
+    iso_forest.fit(feature_cols)
+    raw_scores = iso_forest.decision_function(feature_cols)  # higher = more normal
+    score_min, score_max = raw_scores.min(), raw_scores.max()
+    if score_max > score_min:
+        merged['ai_risk_score'] = ((score_max - raw_scores) / (score_max - score_min) * 100).round(1)
+    else:
+        merged['ai_risk_score'] = 0.0
+    df_reconciled = merged.loc[df_reconciled.index].copy()
+    df_exceptions = merged.loc[df_exceptions.index].copy()
+
     # Exception Audit Log
     exceptions_list = []
     if not df_exceptions.empty:
@@ -109,10 +137,48 @@ def run_ai_reconciliation(sample_size=None, orders_path='orders.csv', payments_p
         severity[cond_missing] = 'High'  # a missing ledger record always overrides to High
         df_exceptions['severity'] = severity
 
-        df_exceptions['action'] = 'FLAGGED_FOR_REVIEW'
         df_exceptions['fee'] = df_exceptions['fee_val']
-        
-        exceptions_list = df_exceptions[['record_id', 'order_id', 'paid_amount', 'fee', 'issue', 'severity', 'action']].to_dict(orient='records')
+
+        # --- Exception Resolution Agent ---
+        # Perceive -> decide -> act, over a fixed, bounded action space (no
+        # free-form generation on real money -- every action is one of a
+        # known, auditable set). Perception = the exception's own issue,
+        # severity, and the IsolationForest anomaly score computed above.
+        # Decision = rule-based routing combining all three signals. Act =
+        # assign one bounded action and log the reasoning trace behind it,
+        # so every decision is explainable after the fact.
+        def _resolve_exception(row):
+            issue, severity, risk = row['issue'], row['severity'], row['ai_risk_score']
+
+            if 'Refunded' in issue:
+                return 'AWAITING_REFUND_CONFIRMATION', (
+                    f"Refund already recorded by gateway (AI anomaly risk {risk}/100) -- "
+                    f"no treasury action required, awaiting settlement confirmation."
+                )
+            if severity == 'Low' and risk < 50:
+                return 'AUTO_RETRY_QUEUED', (
+                    f"Transient status '{issue}', low anomaly risk ({risk}/100) -- "
+                    f"queued for automatic gateway re-poll rather than manual review."
+                )
+            if 'Amount Discrepancy' in issue and risk >= 60:
+                return 'ROUTE_TO_FINANCE_AUDIT', (
+                    f"Unexplained amount mismatch with elevated anomaly risk ({risk}/100) -- "
+                    f"routed to finance audit queue for manual amount verification."
+                )
+            if severity == 'High' or risk >= 70:
+                return 'ESCALATE_TO_TREASURY', (
+                    f"Severity={severity}, AI anomaly risk={risk}/100 -- "
+                    f"exceeds auto-resolution threshold, escalated for immediate treasury review."
+                )
+            return 'FLAGGED_FOR_REVIEW', (
+                f"Severity={severity}, AI anomaly risk={risk}/100 -- routed to standard review queue."
+            )
+
+        _decisions = df_exceptions.apply(_resolve_exception, axis=1, result_type='expand')
+        df_exceptions['action'] = _decisions[0]
+        df_exceptions['agent_reasoning'] = _decisions[1]
+
+        exceptions_list = df_exceptions[['record_id', 'order_id', 'paid_amount', 'fee', 'issue', 'severity', 'action', 'ai_risk_score', 'agent_reasoning']].to_dict(orient='records')
 
     reconciled_list = []
     if not df_reconciled.empty:
@@ -120,7 +186,7 @@ def run_ai_reconciliation(sample_size=None, orders_path='orders.csv', payments_p
         df_reconciled['confidence_score'] = 1.0
         df_reconciled['amount'] = df_reconciled['paid_amount']
         df_reconciled['fee'] = df_reconciled['fee_val']
-        reconciled_list = df_reconciled[['record_id', 'order_id', 'amount', 'fee', 'status', 'confidence_score']].to_dict(orient='records')
+        reconciled_list = df_reconciled[['record_id', 'order_id', 'amount', 'fee', 'status', 'confidence_score', 'ai_risk_score']].to_dict(orient='records')
 
     total_records = len(merged)
     reconciled_count = len(reconciled_list)
