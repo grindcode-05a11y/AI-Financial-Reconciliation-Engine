@@ -1,6 +1,6 @@
 Script of Demo Video 
 
-[Note : Due to technical inconvinience I could'nt use microphone in recording.]
+[Note : Due to technical inconvenience I couldn't use microphone in recording.]
 
 Hey there, I'm Renisha S, a Computer Science engineering student from GCE Salem. 
 On GitHub, you might know me under my development handle, grind-code.
