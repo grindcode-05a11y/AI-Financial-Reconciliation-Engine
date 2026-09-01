@@ -16,8 +16,8 @@ what should happen next.
    exception; fully auditable, no black-box decision over real money.
    Validated as base proof for the ledger engine using a synthetic
    100K+-order Indian e-commerce dataset from Kaggle
-   *(["Synthetic 100K-order Indian e-commerce dataset for sales, customer
-   & ML analytics" — as described by Kaggle])*. A control panel is
+   *"Synthetic 100K-order Indian e-commerce dataset for sales, customer
+   & ML analytics" — as described by Kaggle"*. A control panel is
    included to upload a custom dataset in CSV format for real-time
    results on real data.
 2. **ML anomaly scoring** — unsupervised IsolationForest (scikit-learn)
@@ -28,11 +28,9 @@ what should happen next.
    confirmation, route to finance audit, standard review), with a logged
    reason per decision.
 
-## **Tech Stack**
-
--Python
--Pandas
--NumPy
--scikit-learn
--Streamlit
-
+### Tech Stack
+* **Language:** Python
+* **UI Framework:** Streamlit
+* **Data Processing:** Pandas & NumPy
+* **Machine Learning:** Scikit-Learn (IsolationForest)
+* **Visualizations:** Plotly
